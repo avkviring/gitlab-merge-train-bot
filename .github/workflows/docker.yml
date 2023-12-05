@@ -1,11 +1,9 @@
 name: Create and publish a Docker image
 on:
-  push:
-    branches: ['release']
+  release
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-
 jobs:
   build-and-push-image:
     runs-on: ubuntu-latest
