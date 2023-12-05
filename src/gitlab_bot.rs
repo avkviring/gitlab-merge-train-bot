@@ -29,10 +29,10 @@ impl GitlabBot {
             let pipelines = &item.1;
             if !pipelines.is_empty()
                 && pipelines.iter().all(|p| {
-                    p.status == StatusState::Success
-                        || p.status == StatusState::Canceled
-                        || p.status == StatusState::Manual
-                })
+                p.status == StatusState::Success
+                    || p.status == StatusState::Canceled
+                    || p.status == StatusState::Manual
+            })
             {
                 self.rebase(&item.0)
             } else {
@@ -46,10 +46,10 @@ impl GitlabBot {
             let pipelines = &item.1;
             if !pipelines.is_empty()
                 && pipelines.iter().all(|p| {
-                    p.status == StatusState::Success
-                        || p.status == StatusState::Canceled
-                        || p.status == StatusState::Manual
-                })
+                p.status == StatusState::Success
+                    || p.status == StatusState::Canceled
+                    || p.status == StatusState::Manual
+            })
             {
                 self.merge(&item.0);
             }
@@ -109,13 +109,17 @@ impl GitlabBot {
 
         mrs.sort_by_key(|it| it.iid);
 
-        mrs.into_iter()
+
+        let result: Vec<(MergeRequest, Vec<PipelineBasic>)> = mrs.into_iter()
             .filter(GitlabBot::is_assignee_to_marge_bot)
             .map(|mr| {
                 let pipelines = self.get_pipelines(&mr);
                 (mr, pipelines)
             })
-            .collect()
+            .collect();
+
+        println!("Found {:?} mr", result.len());
+        result
     }
 
     fn get_pipelines(&self, mr: &MergeRequest) -> Vec<PipelineBasic> {
