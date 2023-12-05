@@ -8,10 +8,14 @@ use std::time::Duration;
 // 1 - если branch можно смержить - мержим
 fn main() {
     let bot = GitlabBot::new(
-        env::var("GITLAB_HOST").unwrap(),
-        env::var("GITLAB_TOKEN").unwrap(),
-        env::var("GITLAB_PROJECT").unwrap(),
-        env::var("GITLAB_BOT_NAME").unwrap(),
+        get_env("GITLAB_HOST"),
+        get_env("GITLAB_TOKEN"),
+        get_env("GITLAB_PROJECT"),
+        get_env("GITLAB_BOT_NAME"),
     );
     bot.run();
+}
+
+fn get_env(key: &str) -> String {
+    env::var(key).expect(format!("ENV {:} not set", key).as_str())
 }
