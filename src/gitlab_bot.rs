@@ -1,7 +1,11 @@
-use gitlab::api::projects::merge_requests::{MergeRequestState, MergeRequests, discussions};
+use std::thread;
+use std::time::Duration;
+use gitlab::api::projects::merge_requests::{MergeRequestState, MergeRequests};
 use gitlab::api::projects::pipelines::Pipelines;
-use gitlab::api::{ApiError, projects, Query};
-use gitlab::{api, Commit, Gitlab, MergeRequest, MergeStatus, PipelineBasic, RestError};
+use gitlab::api::{projects, Query};
+use gitlab::{api, Commit, Gitlab, MergeRequest, MergeStatus, PipelineBasic, StatusState};
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 
 pub struct GitlabBot {
     pub client: Gitlab,
@@ -20,37 +24,53 @@ impl GitlabBot {
     }
 
     pub(crate) fn run(self) {
-        self.reasing_failed_to_autor();
+        self.reassign_cannotbemerged_to_author();
+        self.reassing_failed_to_author();
         self.merge_all(self.get_mrs());
-        self.rebase_all(self.get_mrs());
+        self.rebase_first(self.get_mrs());
     }
 
-    fn reasing_failed_to_autor(&self) {
+    fn reassign_cannotbemerged_to_author(&self) {
         self
             .get_mrs()
             .into_iter()
             .filter(|item| item.0.merge_status == MergeStatus::CannotBeMerged)
             .for_each(|item| {
-                let request = projects::merge_requests::EditMergeRequest::builder()
-                    .project(self.project.as_str())
-                    .merge_request(item.0.iid.value())
-                    .assignee(item.0.author.id.value())
-                    .build()
-                    .unwrap();
-
-
-                match api::ignore(request).query(&self.client) {
-                    Ok(_) => {
-                        println!("reasing autor {:?}", item.0.title)
-                    }
-                    Err(e) => {
-                        println!("fail reasing autor {:?} {:?}", item.0.title, e)
-                    }
-                }
-
+                self.set_assignee(&item);
                 let message = format!("MR has merge conflict. Help me @{:}", item.0.author.username);
                 self.create_discussion_comment(item.0, message);
             });
+    }
+
+    fn reassing_failed_to_author(&self) {
+        self
+            .get_mrs()
+            .into_iter()
+            .filter(|item| item.1.iter().any(|p| p.status == StatusState::Failed))
+            .for_each(|item| {
+                self.set_assignee(&item);
+                let message = format!("MR has failed pipeline. Help me @{:}", item.0.author.username);
+                self.create_discussion_comment(item.0, message);
+            });
+    }
+
+    fn set_assignee(&self, item: &(MergeRequest, Vec<PipelineBasic>)) {
+        let request = projects::merge_requests::EditMergeRequest::builder()
+            .project(self.project.as_str())
+            .merge_request(item.0.iid.value())
+            .assignee(item.0.author.id.value())
+            .build()
+            .unwrap();
+
+
+        match api::ignore(request).query(&self.client) {
+            Ok(_) => {
+                println!("reasing autor {:?}", item.0.title)
+            }
+            Err(e) => {
+                println!("fail reasing autor {:?} {:?}", item.0.title, e)
+            }
+        }
     }
 
     fn create_discussion_comment(&self, mr: MergeRequest, message: String) {
@@ -69,13 +89,15 @@ impl GitlabBot {
         });
     }
 
-    fn rebase_all(&self, mrs: Vec<(MergeRequest, Vec<PipelineBasic>)>) {
+    fn rebase_first(&self, mut mrs: Vec<(MergeRequest, Vec<PipelineBasic>)>) {
         let mut commits = self.get_branch_commit("main");
         let first_main_commits = commits.remove(0);
+        mrs.sort_by_key(|mr| mr.0.iid.value());
         mrs
             .iter()
             .filter(|item| !item.0.has_conflicts)
             .filter(|item| !self.is_rebased(&first_main_commits, item))
+            .take(2)
             .for_each(|item| {
                 self.rebase(&item.0);
             });
@@ -119,7 +141,7 @@ impl GitlabBot {
     }
 
     fn get_mrs(&self) -> Vec<(MergeRequest, Vec<PipelineBasic>)> {
-        let mut mrs: Vec<MergeRequest> = MergeRequests::builder()
+        let mrs: Vec<MergeRequest> = MergeRequests::builder()
             .project(self.project.as_str())
             .state(MergeRequestState::Opened)
             .build()

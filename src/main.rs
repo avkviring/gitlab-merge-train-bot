@@ -6,7 +6,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 // 1 - если branch можно смержить - мержим
-fn _main() {
+fn main() {
     loop {
         let bot = GitlabBot::new(
             get_env("GITLAB_HOST"),
@@ -15,11 +15,11 @@ fn _main() {
             get_env("GITLAB_BOT_NAME"),
         );
         bot.run();
-        sleep(Duration::from_secs(60 * 15))
+        sleep(Duration::from_secs(60 * 20))
     }
 }
 
-fn main() {
+fn _main() {
     let bot = GitlabBot::new(
         get_env("GITLAB_HOST"),
         get_env("GITLAB_TOKEN"),
