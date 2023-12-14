@@ -1,12 +1,9 @@
-use std::thread;
-use std::time::Duration;
-use gitlab::api::projects::merge_requests::{MergeRequestState, MergeRequests};
-use gitlab::api::projects::pipelines::Pipelines;
-use gitlab::api::{projects, Query};
 use gitlab::{api, Commit, Gitlab, MergeRequest, MergeStatus, PipelineBasic, StatusState};
-use rand::seq::SliceRandom;
-use rand::thread_rng;
+use gitlab::api::{projects, Query};
+use gitlab::api::projects::merge_requests::{MergeRequests, MergeRequestState};
+use gitlab::api::projects::pipelines::Pipelines;
 
+// добавить resolved на сообщения бота
 pub struct GitlabBot {
     pub client: Gitlab,
     pub project: String,
@@ -34,11 +31,11 @@ impl GitlabBot {
         self
             .get_mrs()
             .into_iter()
-            .filter(|item| item.0.merge_status == MergeStatus::CannotBeMerged)
-            .for_each(|item| {
-                self.set_assignee(&item);
-                let message = format!("MR has merge conflict. Help me @{:}", item.0.author.username);
-                self.create_discussion_comment(item.0, message);
+            .filter(|mr| mr.merge_status == MergeStatus::CannotBeMerged)
+            .for_each(|mr| {
+                self.set_assignee(&mr);
+                let message = format!("MR has merge conflict. Help me @{:}", mr.author.username);
+                self.create_discussion_comment(mr, message);
             });
     }
 
@@ -46,29 +43,38 @@ impl GitlabBot {
         self
             .get_mrs()
             .into_iter()
-            .filter(|item| item.1.iter().any(|p| p.status == StatusState::Failed))
-            .for_each(|item| {
-                self.set_assignee(&item);
-                let message = format!("MR has failed pipeline. Help me @{:}", item.0.author.username);
-                self.create_discussion_comment(item.0, message);
+            .filter(|mr| {
+                match self.get_pipelines(mr) {
+                    Some(pipeline) => {
+                        pipeline.status == StatusState::Failed
+                    }
+                    None => {
+                        false
+                    }
+                }
+            })
+            .for_each(|mr| {
+                self.set_assignee(&mr);
+                let message = format!("MR has failed pipeline. Help me @{:}", mr.author.username);
+                self.create_discussion_comment(mr, message);
             });
     }
 
-    fn set_assignee(&self, item: &(MergeRequest, Vec<PipelineBasic>)) {
+    fn set_assignee(&self, mr: &MergeRequest) {
         let request = projects::merge_requests::EditMergeRequest::builder()
             .project(self.project.as_str())
-            .merge_request(item.0.iid.value())
-            .assignee(item.0.author.id.value())
+            .merge_request(mr.iid.value())
+            .assignee(mr.author.id.value())
             .build()
             .unwrap();
 
 
         match api::ignore(request).query(&self.client) {
             Ok(_) => {
-                println!("reasing autor {:?}", item.0.title)
+                println!("reasing autor {:?}", mr.title)
             }
             Err(e) => {
-                println!("fail reasing autor {:?} {:?}", item.0.title, e)
+                println!("fail reasing autor {:?} {:?}", mr.title, e)
             }
         }
     }
@@ -83,23 +89,21 @@ impl GitlabBot {
         api::ignore(discussions_request).query(&self.client).unwrap();
     }
 
-    fn merge_all(&self, mrs: Vec<(MergeRequest, Vec<PipelineBasic>)>) {
-        mrs.into_iter().for_each(|item| {
-            self.merge(&item.0);
+    fn merge_all(&self, mrs: Vec<MergeRequest>) {
+        mrs.into_iter().for_each(|mr| {
+            self.merge(&mr);
         });
     }
 
-    fn rebase_first(&self, mut mrs: Vec<(MergeRequest, Vec<PipelineBasic>)>) {
-        let mut commits = self.get_branch_commit("main");
-        let first_main_commits = commits.remove(0);
-        mrs.sort_by_key(|mr| mr.0.iid.value());
+    fn rebase_first(&self, mut mrs: Vec<MergeRequest>) {
+        mrs.sort_by_key(|mr| mr.iid.value());
         mrs
             .iter()
-            .filter(|item| !item.0.has_conflicts)
-            .filter(|item| !self.is_rebased(&first_main_commits, item))
+            .filter(|mr| !mr.has_conflicts)
+            .filter(|mr| !self.is_rebased(&mr))
             .take(2)
-            .for_each(|item| {
-                self.rebase(&item.0);
+            .for_each(|mr| {
+                self.rebase(mr);
             });
     }
 
@@ -140,7 +144,7 @@ impl GitlabBot {
         }
     }
 
-    fn get_mrs(&self) -> Vec<(MergeRequest, Vec<PipelineBasic>)> {
+    fn get_mrs(&self) -> Vec<MergeRequest> {
         let mrs: Vec<MergeRequest> = MergeRequests::builder()
             .project(self.project.as_str())
             .state(MergeRequestState::Opened)
@@ -152,15 +156,11 @@ impl GitlabBot {
         mrs
             .into_iter()
             .filter(|item| self.is_assignee_to_marge_bot(item))
-            .map(|mr| {
-                let pipelines = self.get_pipelines(&mr);
-                (mr, pipelines)
-            })
             .collect()
     }
 
-    fn get_pipelines(&self, mr: &MergeRequest) -> Vec<PipelineBasic> {
-        match &mr.sha {
+    fn get_pipelines(&self, mr: &MergeRequest) -> Option<PipelineBasic> {
+        let pp: Vec<PipelineBasic> = match &mr.sha {
             None => Vec::new(),
             Some(sha) => Pipelines::builder()
                 .project(self.project.as_str())
@@ -169,7 +169,9 @@ impl GitlabBot {
                 .unwrap()
                 .query(&self.client)
                 .unwrap(),
-        }
+        };
+
+        pp.into_iter().nth(0)
     }
 
     fn get_branch_commit(&self, branch: &str) -> Vec<Commit> {
@@ -182,8 +184,14 @@ impl GitlabBot {
         commits
     }
 
-    fn is_rebased(&self, first_main_commits: &Commit, item: &(MergeRequest, Vec<PipelineBasic>)) -> bool {
-        self.get_branch_commit(item.0.source_branch.as_str()).iter().any(|c| c.id == first_main_commits.id)
+    fn is_rebased(&self, mr: &MergeRequest) -> bool {
+        let target_commits = self.get_branch_commit(mr.target_branch.as_str());
+        if target_commits.len() == 0 {
+            false
+        } else {
+            let source_commits = self.get_branch_commit(mr.source_branch.as_str());
+            source_commits.iter().any(|c| c.id == target_commits[0].id)
+        }
     }
 
     fn is_assignee_to_marge_bot(&self, mr: &MergeRequest) -> bool {
