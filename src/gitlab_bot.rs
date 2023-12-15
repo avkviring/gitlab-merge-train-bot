@@ -1,3 +1,5 @@
+use std::thread;
+use std::time::Duration;
 use gitlab::{api, Commit, Gitlab, MergeRequest, MergeStatus, PipelineBasic, StatusState};
 use gitlab::api::{projects, Query};
 use gitlab::api::projects::merge_requests::{MergeRequests, MergeRequestState};
@@ -24,6 +26,10 @@ impl GitlabBot {
         self.reassign_cannotbemerged_to_author();
         self.reassing_failed_to_author();
         self.merge_all(self.get_mrs());
+
+        thread::sleep(Duration::from_secs(5));
+        self.cancel_not_rebased_pipelines(self.get_mrs());
+
         self.rebase_first(self.get_mrs());
     }
 
@@ -35,7 +41,7 @@ impl GitlabBot {
             .for_each(|mr| {
                 self.set_assignee(&mr);
                 let message = format!("MR has merge conflict. Help me @{:}", mr.author.username);
-                self.create_discussion_comment(mr, message);
+                self.create_discussion_note(mr, message);
             });
     }
 
@@ -56,7 +62,7 @@ impl GitlabBot {
             .for_each(|mr| {
                 self.set_assignee(&mr);
                 let message = format!("MR has failed pipeline. Help me @{:}", mr.author.username);
-                self.create_discussion_comment(mr, message);
+                self.create_discussion_note(mr, message);
             });
     }
 
@@ -71,23 +77,14 @@ impl GitlabBot {
 
         match api::ignore(request).query(&self.client) {
             Ok(_) => {
-                println!("reasing autor {:?}", mr.title)
+                println!("reasing autor {:}", mr.title)
             }
             Err(e) => {
-                println!("fail reasing autor {:?} {:?}", mr.title, e)
+                println!("fail reasing autor {:} {:?}", mr.title, e)
             }
         }
     }
 
-    fn create_discussion_comment(&self, mr: MergeRequest, message: String) {
-        let discussions_request = projects::merge_requests::discussions::CreateMergeRequestDiscussion::builder()
-            .project(self.project.as_str())
-            .merge_request(mr.iid.value())
-            .body(message)
-            .build()
-            .unwrap();
-        api::ignore(discussions_request).query(&self.client).unwrap();
-    }
 
     fn merge_all(&self, mrs: Vec<MergeRequest>) {
         mrs.into_iter().for_each(|mr| {
@@ -96,14 +93,50 @@ impl GitlabBot {
     }
 
     fn rebase_first(&self, mut mrs: Vec<MergeRequest>) {
+        let count_active_mr: i32 = 2 - mrs
+            .iter()
+            .filter(|mr| !mr.has_conflicts)
+            .filter(|mr| self.is_rebased(&mr)).count() as i32;
+
+        if count_active_mr <= 0 {
+            return;
+        }
+
         mrs.sort_by_key(|mr| mr.iid.value());
         mrs
             .iter()
             .filter(|mr| !mr.has_conflicts)
             .filter(|mr| !self.is_rebased(&mr))
-            .take(2)
+            .take(count_active_mr as usize)
             .for_each(|mr| {
                 self.rebase(mr);
+            });
+    }
+
+    fn cancel_not_rebased_pipelines(&self, mrs: Vec<MergeRequest>) {
+        mrs
+            .iter()
+            .filter(|mr| !self.is_rebased(&mr))
+            .for_each(|mr| {
+                let pipeline = self.get_pipelines(mr);
+                match pipeline {
+                    None => {}
+                    Some(pipeline) => {
+                        let cancel_request = projects::pipelines::CancelPipeline::builder()
+                            .project(self.project.as_str())
+                            .pipeline(pipeline.id.value())
+                            .build()
+                            .unwrap();
+                        match api::ignore(cancel_request).query(&self.client) {
+                            Ok(_) => {
+                                println!("cancel pipeline {:?}", mr.title)
+                            }
+                            Err(e) => {
+                                println!("error cancel pipeline {:?}", mr.title)
+                            }
+                        }
+                    }
+                }
             });
     }
 
@@ -143,6 +176,7 @@ impl GitlabBot {
             }
         }
     }
+
 
     fn get_mrs(&self) -> Vec<MergeRequest> {
         let mrs: Vec<MergeRequest> = MergeRequests::builder()
@@ -198,6 +232,24 @@ impl GitlabBot {
         match mr.assignees.as_ref() {
             None => false,
             Some(users) => users.iter().any(|user| user.name == self.name),
+        }
+    }
+
+    fn create_discussion_note(&self, mr: MergeRequest, message: String) {
+        let note_request = projects::merge_requests::notes::CreateMergeRequestNote::builder()
+            .project(self.project.as_str())
+            .merge_request(mr.iid.value())
+            .body(message)
+            .build()
+            .unwrap();
+
+        match api::ignore(note_request).query(&self.client) {
+            Ok(_) => {
+                println!("create note in {:}", mr.title)
+            }
+            Err(e) => {
+                println!("error create note {:?}", e)
+            }
         }
     }
 }
