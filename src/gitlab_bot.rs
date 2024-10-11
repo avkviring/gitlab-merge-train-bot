@@ -1,9 +1,12 @@
+use gitlab::api::merge_requests::MergeRequestState;
+use gitlab::api::projects::merge_requests::MergeRequests;
+use gitlab::api::projects::pipelines::{Pipeline, Pipelines};
+use gitlab::api::{projects, Query};
+use gitlab::webhooks::{MergeStatus, StatusState};
+use gitlab::{api, Gitlab};
 use std::thread;
 use std::time::Duration;
-use gitlab::{api, rsionCommit, Gitlab, MergeRequest, MergeStatus, PipelineBasic, StatusState};
-use gitlab::api::{projects, Query};
-use gitlab::api::projects::merge_requests::{MergeRequests, MergeRequestState};
-use gitlab::api::projects::pipelines::Pipelines;
+use serde::{Deserialize};
 
 // добавить resolved на сообщения бота
 pub struct GitlabBot {
@@ -66,11 +69,11 @@ impl GitlabBot {
             });
     }
 
-    fn set_assignee(&self, mr: &MergeRequest) {
+    fn set_assignee(&self, mr: &SelfMergeRequest) {
         let request = projects::merge_requests::EditMergeRequest::builder()
             .project(self.project.as_str())
-            .merge_request(mr.iid.value())
-            .assignee(mr.author.id.value())
+            .merge_request(mr.iid)
+            .assignee(mr.author.id)
             .build()
             .unwrap();
 
@@ -86,13 +89,13 @@ impl GitlabBot {
     }
 
 
-    fn merge_all(&self, mrs: Vec<MergeRequest>) {
+    fn merge_all(&self, mrs: Vec<SelfMergeRequest>) {
         mrs.into_iter().for_each(|mr| {
             self.merge(&mr);
         });
     }
 
-    fn rebase_first(&self, mut mrs: Vec<MergeRequest>) {
+    fn rebase_first(&self, mut mrs: Vec<SelfMergeRequest>) {
         let count_active_mr: i32 = 2 - mrs
             .iter()
             .filter(|mr| !mr.has_conflicts)
@@ -102,7 +105,7 @@ impl GitlabBot {
             return;
         }
 
-        mrs.sort_by_key(|mr| mr.iid.value());
+        mrs.sort_by_key(|mr| mr.iid);
         mrs
             .iter()
             .filter(|mr| !mr.has_conflicts)
@@ -113,7 +116,7 @@ impl GitlabBot {
             });
     }
 
-    fn cancel_not_rebased_pipelines(&self, mrs: Vec<MergeRequest>) {
+    fn cancel_not_rebased_pipelines(&self, mrs: Vec<SelfMergeRequest>) {
         mrs
             .iter()
             .filter(|mr| !self.is_rebased(&mr))
@@ -124,7 +127,7 @@ impl GitlabBot {
                     Some(pipeline) => {
                         let cancel_request = projects::pipelines::CancelPipeline::builder()
                             .project(self.project.as_str())
-                            .pipeline(pipeline.id.value())
+                            .pipeline(pipeline.id)
                             .build()
                             .unwrap();
                         match api::ignore(cancel_request).query(&self.client) {
@@ -141,8 +144,8 @@ impl GitlabBot {
     }
 
 
-    fn rebase(&self, merge_request: &MergeRequest) -> bool {
-        let merge_request_iid = merge_request.iid.value();
+    fn rebase(&self, merge_request: &SelfMergeRequest) -> bool {
+        let merge_request_iid = merge_request.iid;
         let rebase = projects::merge_requests::RebaseMergeRequest::builder()
             .project(self.project.as_str())
             .merge_request(merge_request_iid)
@@ -160,8 +163,8 @@ impl GitlabBot {
         }
     }
 
-    fn merge(&self, merge_request: &MergeRequest) {
-        let merge_request_iid = merge_request.iid.value();
+    fn merge(&self, merge_request: &SelfMergeRequest) {
+        let merge_request_iid = merge_request.iid;
         let rebase = projects::merge_requests::MergeMergeRequest::builder()
             .project(self.project.as_str())
             .merge_request(merge_request_iid)
@@ -178,8 +181,8 @@ impl GitlabBot {
     }
 
 
-    fn get_mrs(&self) -> Vec<MergeRequest> {
-        let mrs: Vec<MergeRequest> = MergeRequests::builder()
+    fn get_mrs(&self) -> Vec<SelfMergeRequest> {
+        let mrs:Vec<SelfMergeRequest> = MergeRequests::builder()
             .project(self.project.as_str())
             .state(MergeRequestState::Opened)
             .build()
@@ -193,12 +196,12 @@ impl GitlabBot {
             .collect()
     }
 
-    fn get_pipelines(&self, mr: &MergeRequest) -> Option<PipelineBasic> {
-        let pp: Vec<PipelineBasic> = match &mr.sha {
+    fn get_pipelines(&self, mr: &SelfMergeRequest) -> Option<SelfPipeline> {
+        let pp: Vec<SelfPipeline> = match &mr.sha {
             None => Vec::new(),
             Some(sha) => Pipelines::builder()
                 .project(self.project.as_str())
-                .sha(sha.value())
+                .sha(sha)
                 .build()
                 .unwrap()
                 .query(&self.client)
@@ -208,17 +211,17 @@ impl GitlabBot {
         pp.into_iter().nth(0)
     }
 
-    fn get_branch_commit(&self, branch: &str) -> Vec<Commit> {
+    fn get_branch_commit(&self, branch: &str) -> Vec<SelfCommit> {
         let commit_request = projects::repository::commits::Commits::builder()
             .project(self.project.as_str())
             .ref_name(branch)
             .build()
             .unwrap();
-        let commits: Vec<Commit> = commit_request.query(&self.client).unwrap();
+        let commits: Vec<SelfCommit> = commit_request.query(&self.client).unwrap();
         commits
     }
 
-    fn is_rebased(&self, mr: &MergeRequest) -> bool {
+    fn is_rebased(&self, mr: &SelfMergeRequest) -> bool {
         let target_commits = self.get_branch_commit(mr.target_branch.as_str());
         if target_commits.len() == 0 {
             false
@@ -228,17 +231,17 @@ impl GitlabBot {
         }
     }
 
-    fn is_assignee_to_marge_bot(&self, mr: &MergeRequest) -> bool {
+    fn is_assignee_to_marge_bot(&self, mr: &SelfMergeRequest) -> bool {
         match mr.assignees.as_ref() {
             None => false,
             Some(users) => users.iter().any(|user| user.name == self.name),
         }
     }
 
-    fn create_discussion_note(&self, mr: MergeRequest, message: String) {
+    fn create_discussion_note(&self, mr: SelfMergeRequest, message: String) {
         let note_request = projects::merge_requests::notes::CreateMergeRequestNote::builder()
             .project(self.project.as_str())
-            .merge_request(mr.iid.value())
+            .merge_request(mr.iid)
             .body(message)
             .build()
             .unwrap();
@@ -252,4 +255,36 @@ impl GitlabBot {
             }
         }
     }
+}
+
+
+#[derive(Deserialize)]
+pub struct SelfMergeRequest {
+    has_conflicts: bool,
+    iid: u64,
+    title: String,
+    sha: Option<String>,
+    assignees: Option<Vec<SelfUser>>,
+    target_branch: String,
+    source_branch: String,
+    merge_status: MergeStatus,
+    author: SelfUser,
+}
+
+#[derive(Deserialize)]
+pub struct SelfUser {
+    name: String,
+    username: String,
+    id: u64
+}
+
+#[derive(Deserialize)]
+pub struct SelfPipeline {
+    status: StatusState,
+    id: u64
+}
+
+#[derive(Deserialize)]
+pub struct SelfCommit {
+    id: u64
 }
