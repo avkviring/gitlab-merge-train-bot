@@ -1,12 +1,12 @@
 use gitlab::api::merge_requests::MergeRequestState;
 use gitlab::api::projects::merge_requests::MergeRequests;
-use gitlab::api::projects::pipelines::{Pipeline, Pipelines};
+use gitlab::api::projects::pipelines::Pipelines;
 use gitlab::api::{projects, Query};
 use gitlab::webhooks::{MergeStatus, StatusState};
 use gitlab::{api, Gitlab};
+use serde::Deserialize;
 use std::thread;
 use std::time::Duration;
-use serde::{Deserialize};
 
 // добавить resolved на сообщения бота
 pub struct GitlabBot {
@@ -27,13 +27,13 @@ impl GitlabBot {
 
     pub(crate) fn run(self) {
         self.reassign_cannotbemerged_to_author();
-        self.reassing_failed_to_author();
+        //self.reassing_failed_to_author();
         self.merge_all(self.get_mrs());
 
         thread::sleep(Duration::from_secs(5));
-        self.cancel_not_rebased_pipelines(self.get_mrs());
 
-        self.rebase_first(self.get_mrs());
+        self.cancel_not_rebased_pipelines(self.get_mrs());
+        self.rebase_all(self.get_mrs());
     }
 
     fn reassign_cannotbemerged_to_author(&self) {
@@ -95,22 +95,11 @@ impl GitlabBot {
         });
     }
 
-    fn rebase_first(&self, mut mrs: Vec<SelfMergeRequest>) {
-        let count_active_mr: i32 = 2 - mrs
-            .iter()
-            .filter(|mr| !mr.has_conflicts)
-            .filter(|mr| self.is_rebased(&mr)).count() as i32;
-
-        if count_active_mr <= 0 {
-            return;
-        }
-
-        mrs.sort_by_key(|mr| mr.iid);
+    fn rebase_all(&self, mut mrs: Vec<SelfMergeRequest>) {
         mrs
             .iter()
             .filter(|mr| !mr.has_conflicts)
             .filter(|mr| !self.is_rebased(&mr))
-            .take(count_active_mr as usize)
             .for_each(|mr| {
                 self.rebase(mr);
             });
@@ -182,7 +171,7 @@ impl GitlabBot {
 
 
     fn get_mrs(&self) -> Vec<SelfMergeRequest> {
-        let mrs:Vec<SelfMergeRequest> = MergeRequests::builder()
+        let mrs: Vec<SelfMergeRequest> = MergeRequests::builder()
             .project(self.project.as_str())
             .state(MergeRequestState::Opened)
             .build()
@@ -275,19 +264,17 @@ pub struct SelfMergeRequest {
 pub struct SelfUser {
     name: String,
     username: String,
-    id: u64
+    id: u64,
 }
 
 #[derive(Deserialize)]
 pub struct SelfPipeline {
     status: StatusState,
-    id: u64
+    id: u64,
 }
-
-
 
 
 #[derive(Deserialize)]
 pub struct SelfCommit {
-    id: String
+    id: String,
 }
