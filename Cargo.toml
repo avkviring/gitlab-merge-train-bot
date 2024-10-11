@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 gitlab = "0.1704.1"
 rand = { version = "0.8.5", features = [] }
+serde = { version = "1.0.193", features = ["derive"] }
