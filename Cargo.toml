@@ -6,5 +6,5 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-gitlab = "0.1606.0"
+gitlab = "0.1704.1"
 rand = { version = "0.8.5", features = [] }
