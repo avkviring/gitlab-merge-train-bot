@@ -189,7 +189,7 @@ impl GitlabBot {
 
         mrs
             .into_iter()
-            .filter(|item| self.is_assignee_to_marge_bot(item))
+            .filter(|item| !item.draft)
             .collect()
     }
 
@@ -225,13 +225,6 @@ impl GitlabBot {
         } else {
             let source_commits = self.get_branch_commit(mr.source_branch.as_str());
             source_commits.iter().any(|c| c.id == target_commits[0].id)
-        }
-    }
-
-    fn is_assignee_to_marge_bot(&self, mr: &MergeRequest) -> bool {
-        match mr.assignees.as_ref() {
-            None => false,
-            Some(users) => users.iter().any(|user| user.name == self.name),
         }
     }
 
