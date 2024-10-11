@@ -284,7 +284,10 @@ pub struct SelfPipeline {
     id: u64
 }
 
+
+
+
 #[derive(Deserialize)]
 pub struct SelfCommit {
-    id: u64
+    id: String
 }
